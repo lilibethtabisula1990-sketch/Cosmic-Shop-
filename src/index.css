@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  background-color: #0a0a1a;
+  color: #ffffff;
+}
+
+body {
+  @apply bg-[#0a0a1a] text-white;
+}
+
+.glass-panel {
+  @apply bg-white/5 backdrop-blur-xl border border-white/10;
+}
+
+.purple-gradient {
+  @apply bg-gradient-to-br from-purple-600/20 to-indigo-600/20;
+}

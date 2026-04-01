@@ -36,7 +36,11 @@ import {
   Zap,
   Globe,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Edit,
+  Wallet,
+  ExternalLink,
+  History
 } from 'lucide-react';
 import { 
   User as SupabaseUser 
@@ -98,6 +102,29 @@ interface Purchase {
   uid: string;
   post_id: string;
   amount: number;
+  created_at: string;
+}
+
+interface SellerApplication {
+  id: string;
+  uid: string;
+  email: string;
+  tg_channel_link: string;
+  tg_username: string;
+  proof_vouch_channel: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+}
+
+interface Withdrawal {
+  id: string;
+  uid: string;
+  email: string;
+  amount: number;
+  gcash_number: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  admin_message?: string;
+  admin_image?: string;
   created_at: string;
 }
 
@@ -498,6 +525,29 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isWhitelisting, setIsWhitelisting] = useState(false);
   const [whitelistUsername, setWhitelistUsername] = useState('');
+
+  // Seller Application State
+  const [sellerApplications, setSellerApplications] = useState<SellerApplication[]>([]);
+  const [isApplySellerModalOpen, setIsApplySellerModalOpen] = useState(false);
+  const [tgChannelLink, setTgChannelLink] = useState('');
+  const [tgUsername, setTgUsername] = useState('');
+  const [proofVouchChannel, setProofVouchChannel] = useState('');
+  const [isApplying, setIsApplying] = useState(false);
+
+  // Withdrawal State
+  const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
+  const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [gcashNumber, setGcashNumber] = useState('');
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [dailyWithdrawAmount, setDailyWithdrawAmount] = useState(0);
+
+  // Admin Response State
+  const [adminMessage, setNewAdminMessage] = useState('');
+  const [adminImage, setAdminImage] = useState<string | null>(null);
+  const [isResponding, setIsResponding] = useState(false);
+  const [editingPost, setEditingPost] = useState<Post | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isSearchingUser, setIsSearchingUser] = useState(false);
 
   // TopUp Form State
@@ -617,6 +667,7 @@ function App() {
           setIsSuperAdmin(role === 'admin');
         } else if (userData) {
           setUserBalance(userData.balance || 0);
+          setDailyWithdrawAmount(userData.daily_withdraw_amount || 0);
           if (userData.role === 'admin') {
             setIsSuperAdmin(true);
           }
@@ -688,6 +739,14 @@ function App() {
         .order('created_at', { ascending: true })
         .limit(50);
       if (globalMsgsData) setGlobalMessages(globalMsgsData);
+
+      if (isSuperAdmin) {
+        const { data: appsData } = await supabase.from('seller_applications').select('*').order('created_at', { ascending: false });
+        if (appsData) setSellerApplications(appsData);
+
+        const { data: withdrawsData } = await supabase.from('withdrawals').select('*').order('created_at', { ascending: false });
+        if (withdrawsData) setWithdrawals(withdrawsData);
+      }
     };
 
     fetchPublicData();
@@ -705,6 +764,14 @@ function App() {
       supabase.from('sellers').select('*').then(({ data }) => setSellers(data || []));
     }).subscribe();
 
+    const appsChannel = supabase.channel(`admin-apps-${Math.random().toString(36).substring(7)}`).on('postgres_changes', { event: '*', schema: 'public', table: 'seller_applications' }, () => {
+      if (isSuperAdmin) supabase.from('seller_applications').select('*').order('created_at', { ascending: false }).then(({ data }) => setSellerApplications(data || []));
+    }).subscribe();
+
+    const withdrawsChannel = supabase.channel(`admin-withdraws-${Math.random().toString(36).substring(7)}`).on('postgres_changes', { event: '*', schema: 'public', table: 'withdrawals' }, () => {
+      if (isSuperAdmin) supabase.from('withdrawals').select('*').order('created_at', { ascending: false }).then(({ data }) => setWithdrawals(data || []));
+    }).subscribe();
+
     const globalChatChannel = supabase.channel(`public-global-chat-${Math.random().toString(36).substring(7)}`).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'global_messages' }, (payload) => {
       setGlobalMessages(prev => [...prev, payload.new].slice(-50));
     }).subscribe();
@@ -713,6 +780,8 @@ function App() {
       supabase.removeChannel(postsChannel);
       supabase.removeChannel(feedbacksChannel);
       supabase.removeChannel(sellersChannel);
+      supabase.removeChannel(appsChannel);
+      supabase.removeChannel(withdrawsChannel);
       supabase.removeChannel(globalChatChannel);
     };
   }, []);
@@ -941,7 +1010,7 @@ function App() {
     await supabase.auth.signOut();
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'images' | 'files' | 'feedback' | 'topup') => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'images' | 'files' | 'feedback' | 'topup' | 'admin') => {
     const files = e.target.files;
     if (!files) return;
 
@@ -1282,6 +1351,12 @@ function App() {
 
         if (purchaseError) throw purchaseError;
 
+        // Update seller balance
+        const { data: sellerData } = await supabase.from('users').select('balance').eq('id', post.author_id).single();
+        if (sellerData) {
+          await supabase.from('users').update({ balance: (sellerData.balance || 0) + post.price }).eq('id', post.author_id);
+        }
+
         // Create notification for buyer
         await supabase.from('notifications').insert({
           uid: user.id,
@@ -1395,6 +1470,142 @@ function App() {
     });
   };
 
+  const handleApplySeller = async () => {
+    if (!user || !tgChannelLink || !tgUsername || !proofVouchChannel) {
+      showAlert('Missing Information', 'Please fill in all fields to apply.');
+      return;
+    }
+    setIsApplying(true);
+    try {
+      const { error } = await supabase.from('seller_applications').insert({
+        uid: user.id,
+        email: user.email,
+        tg_channel_link: tgChannelLink,
+        tg_username: tgUsername,
+        proof_vouch_channel: proofVouchChannel,
+        status: 'pending'
+      });
+      if (error) throw error;
+      setIsApplySellerModalOpen(false);
+      showAlert('Application Sent', 'Your seller application has been sent to the owner for review.');
+      setTgChannelLink('');
+      setTgUsername('');
+      setProofVouchChannel('');
+    } catch (error) {
+      handleSupabaseError(error, 'apply as seller');
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
+  const handleWithdraw = async () => {
+    const amount = parseFloat(withdrawAmount);
+    if (isNaN(amount) || amount < 100) {
+      showAlert('Invalid Amount', 'Minimum withdrawal is ₱100.');
+      return;
+    }
+    if (amount > 1000) {
+      showAlert('Limit Exceeded', 'Maximum withdrawal is ₱1,000 per day.');
+      return;
+    }
+    if (dailyWithdrawAmount + amount > 1000) {
+      showAlert('Daily Limit Exceeded', `You have already withdrawn ₱${dailyWithdrawAmount} today. Remaining limit: ₱${1000 - dailyWithdrawAmount}.`);
+      return;
+    }
+    if (amount > userBalance) {
+      showAlert('Insufficient Balance', 'You do not have enough balance to withdraw this amount.');
+      return;
+    }
+    if (!gcashNumber) {
+      showAlert('Missing Information', 'Please enter your GCash number.');
+      return;
+    }
+
+    setIsWithdrawing(true);
+    try {
+      const { error } = await supabase.from('withdrawals').insert({
+        uid: user.id,
+        email: user.email,
+        amount: amount,
+        gcash_number: gcashNumber,
+        status: 'pending'
+      });
+      if (error) throw error;
+      
+      // Update user balance and daily limit optimistically
+      const newBalance = userBalance - amount;
+      const newDailyLimit = dailyWithdrawAmount + amount;
+      await supabase.from('users').update({ 
+        balance: newBalance,
+        daily_withdraw_amount: newDailyLimit,
+        last_withdraw_date: new Date().toISOString().split('T')[0]
+      }).eq('id', user.id);
+
+      setUserBalance(newBalance);
+      setDailyWithdrawAmount(newDailyLimit);
+      setIsWithdrawModalOpen(false);
+      showAlert('Request Sent', 'Your withdrawal request has been sent and is pending approval.');
+      setWithdrawAmount('');
+      setGcashNumber('');
+    } catch (error) {
+      handleSupabaseError(error, 'withdraw money');
+    } finally {
+      setIsWithdrawing(false);
+    }
+  };
+
+  const handleManageApplication = async (appId: string, status: 'accepted' | 'rejected') => {
+    try {
+      const { data: appData } = await supabase.from('seller_applications').update({ status }).eq('id', appId).select().single();
+      if (appData && status === 'accepted') {
+        await supabase.from('sellers').upsert({
+          id: appData.uid,
+          email: appData.email,
+          uid: appData.uid,
+          added_at: new Date().toISOString()
+        });
+        await supabase.from('users').update({ role: 'seller' }).eq('id', appData.uid);
+      }
+      setSellerApplications(prev => prev.map(a => a.id === appId ? { ...a, status } : a));
+    } catch (error) {
+      handleSupabaseError(error, 'manage seller application');
+    }
+  };
+
+  const handleManageWithdrawal = async (withdrawalId: string, status: 'accepted' | 'rejected') => {
+    setIsResponding(true);
+    try {
+      const { error } = await supabase.from('withdrawals').update({ 
+        status,
+        admin_message: adminMessage,
+        admin_image: adminImage
+      }).eq('id', withdrawalId);
+      
+      if (error) throw error;
+
+      if (status === 'rejected') {
+        const withdrawal = withdrawals.find(w => w.id === withdrawalId);
+        if (withdrawal) {
+          const { data: userData } = await supabase.from('users').select('balance').eq('id', withdrawal.uid).single();
+          if (userData) {
+            await supabase.from('users').update({ 
+              balance: (userData.balance || 0) + withdrawal.amount 
+            }).eq('id', withdrawal.uid);
+          }
+        }
+      }
+
+      setWithdrawals(prev => prev.map(w => w.id === withdrawalId ? { ...w, status, admin_message: adminMessage, admin_image: adminImage } : w));
+      setNewAdminMessage('');
+      setAdminImage(null);
+      showAlert('Success', `Withdrawal request ${status}.`);
+    } catch (error) {
+      handleSupabaseError(error, 'manage withdrawal');
+    } finally {
+      setIsResponding(false);
+    }
+  };
+
   const handleMarkAsRead = async (id: string) => {
     try {
       const { error } = await supabase.from('notifications').update({ is_read: true }).eq('id', id);
@@ -1421,6 +1632,11 @@ function App() {
     { icon: MessageSquare, label: 'Proofs', tab: 'feedback' },
     ...(user ? [
       { icon: PhilippinePeso, label: 'Top Up', tab: 'topup' },
+    ] : []),
+    ...(isSeller ? [
+      { icon: Wallet, label: 'Withdraw', onClick: () => setIsWithdrawModalOpen(true) },
+    ] : user ? [
+      { icon: User, label: 'Become Seller', onClick: () => setIsApplySellerModalOpen(true) },
     ] : []),
     ...(isSuperAdmin || isSeller ? [
       { icon: PlusCircle, label: 'Post', tab: 'admin' },
@@ -1476,9 +1692,13 @@ function App() {
               <div className="flex-1 overflow-y-auto py-6 px-4 space-y-2">
                 {sidebarNavItems.map((item) => (
                   <button
-                    key={item.tab}
+                    key={item.label}
                     onClick={() => {
-                      setActiveTab(item.tab as any);
+                      if (item.onClick) {
+                        item.onClick();
+                      } else {
+                        setActiveTab(item.tab as any);
+                      }
                       setIsSidebarOpen(false);
                     }}
                     className={cn(
@@ -1855,7 +2075,7 @@ function App() {
                           {isPurchased ? (
                             <Button 
                               variant="glass" 
-                              className="flex-1 rounded-xl py-3 text-green-400 border-green-500/20 hover:bg-green-500/10"
+                              className="flex-1 rounded-xl py-3 text-cyan-400 border-cyan-500/20 hover:bg-cyan-500/10"
                               onClick={() => {
                                 if (post.type === 'file') {
                                   showAlert('Download Files', `Files: ${post.files?.join(', ') || 'No files available'}`);
@@ -1870,8 +2090,17 @@ function App() {
                           ) : (
                             <Button 
                               variant="purple" 
-                              className="flex-1 rounded-xl py-3" 
-                              onClick={() => handleBuy(post)}
+                              className="flex-1 rounded-xl py-3 bg-cyan-600 hover:bg-cyan-500" 
+                              onClick={() => {
+                                if (isSeller && post.author_id !== user.id) {
+                                  const seller = sellers.find(s => s.id === post.author_id);
+                                  if (!seller) {
+                                    showAlert('Restricted', 'Sellers cannot buy owner posts.');
+                                    return;
+                                  }
+                                }
+                                handleBuy(post);
+                              }}
                               disabled={post.stock != null && post.stock <= 0}
                             >
                               {post.stock != null && post.stock <= 0 ? 'Out of Stock' : 'Buy Now'}
@@ -1887,15 +2116,28 @@ function App() {
                               <Zap className={cn("h-4 w-4", (post.likes || 0) > 0 && "fill-pink-400")} />
                               {(post.likes || 0) > 0 && <span className="ml-1 text-[10px] font-black">{post.likes}</span>}
                             </Button>
-                            {(isSuperAdmin || isSeller) && (
-                              <Button 
-                                variant="glass"
-                                size="icon"
-                                onClick={() => handleDeletePost(post.id)}
-                                className="rounded-xl text-red-400 hover:text-red-300 hover:bg-red-500/20 border-red-500/20"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                            {(isSuperAdmin || (isSeller && post.author_id === user.id)) && (
+                              <div className="flex gap-2">
+                                <Button 
+                                  variant="glass"
+                                  size="icon"
+                                  onClick={() => {
+                                    setEditingPost(post);
+                                    setIsEditModalOpen(true);
+                                  }}
+                                  className="rounded-xl text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/20 border-cyan-500/20"
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button 
+                                  variant="glass"
+                                  size="icon"
+                                  onClick={() => handleDeletePost(post.id)}
+                                  className="rounded-xl text-red-400 hover:text-red-300 hover:bg-red-500/20 border-red-500/20"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -2520,89 +2762,189 @@ function App() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="mx-auto max-w-4xl"
+              className="mx-auto max-w-4xl space-y-12"
             >
-              <h2 className="mb-8 text-3xl font-black text-white tracking-tight">Top Up Requests</h2>
-              <div className="grid gap-6 sm:grid-cols-2">
-                {topups.filter(r => r.status === 'pending').length === 0 ? (
-                  <div className="col-span-full py-20 text-center">
-                    <AlertCircle className="mx-auto mb-4 h-16 w-16 text-white/5" />
-                    <p className="text-sm font-bold text-gray-500 uppercase tracking-widest">No pending requests.</p>
-                  </div>
-                ) : (
-                  topups.filter(r => r.status === 'pending').map((request) => (
-                    <Card key={request.id} glass className="p-6 border-white/5">
-                      <div className="mb-6 flex items-start justify-between">
-                        <div>
-                          <p className="font-black text-white tracking-tight">{request.email}</p>
+              <section>
+                <h2 className="mb-8 text-3xl font-black text-white tracking-tight">Top Up Requests</h2>
+                <div className="grid gap-6 sm:grid-cols-2">
+                  {topups.filter(r => r.status === 'pending').length === 0 ? (
+                    <div className="col-span-full py-10 text-center border border-dashed border-white/10 rounded-3xl">
+                      <p className="text-sm font-bold text-gray-500 uppercase tracking-widest">No pending top-ups.</p>
+                    </div>
+                  ) : (
+                    topups.filter(r => r.status === 'pending').map((request) => (
+                      <Card key={request.id} glass className="p-6 border-white/5">
+                        <div className="mb-6 flex items-start justify-between">
+                          <div>
+                            <p className="font-black text-white tracking-tight">{request.email}</p>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mt-1">
+                              {request.created_at ? format(new Date(request.created_at), 'MMM d, h:mm a') : 'Just now'}
+                            </p>
+                          </div>
+                          <span className="text-2xl font-black text-cyan-400">₱{request.amount.toLocaleString()}</span>
+                        </div>
+                        
+                        {request.proof_image && (
+                          <div className="mb-6 overflow-hidden rounded-2xl border border-white/10">
+                            <img src={request.proof_image} className="max-h-64 w-full object-cover cursor-pointer" alt="Proof" onClick={() => window.open(request.proof_image, '_blank')} />
+                          </div>
+                        )}
+
+                        <div className="flex gap-4">
+                          <Button 
+                            variant="purple" 
+                            className="flex-1 rounded-xl py-3 bg-cyan-600 hover:bg-cyan-500" 
+                            onClick={() => handleApproveTopUp(request)}
+                            isLoading={processingTopUpId === request.id}
+                            disabled={!!processingTopUpId}
+                          >
+                            <CheckCircle2 className="mr-2 h-4 w-4" />
+                            Approve
+                          </Button>
+                          <Button 
+                            variant="glass" 
+                            className="flex-1 rounded-xl py-3 text-red-400 hover:text-red-300 hover:bg-red-500/20 border-red-500/20" 
+                            onClick={() => handleRejectTopUp(request)}
+                            disabled={!!processingTopUpId}
+                          >
+                            <X className="mr-2 h-4 w-4" />
+                            Reject
+                          </Button>
+                        </div>
+                      </Card>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section>
+                <h2 className="mb-8 text-3xl font-black text-white tracking-tight">Seller Applications</h2>
+                <div className="grid gap-6 sm:grid-cols-2">
+                  {sellerApplications.filter(a => a.status === 'pending').length === 0 ? (
+                    <div className="col-span-full py-10 text-center border border-dashed border-white/10 rounded-3xl">
+                      <p className="text-sm font-bold text-gray-500 uppercase tracking-widest">No pending applications.</p>
+                    </div>
+                  ) : (
+                    sellerApplications.filter(a => a.status === 'pending').map((app) => (
+                      <Card key={app.id} glass className="p-6 border-white/5">
+                        <div className="mb-6">
+                          <p className="font-black text-white tracking-tight">{app.email}</p>
                           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mt-1">
-                            {request.created_at ? format(new Date(request.created_at), 'MMM d, h:mm a') : 'Just now'}
+                            {app.created_at ? format(new Date(app.created_at), 'MMM d, h:mm a') : 'Just now'}
                           </p>
                         </div>
-                        <span className="text-2xl font-black text-purple-400">₱{request.amount.toLocaleString()}</span>
-                      </div>
-                      
-                      {request.proof_image && (
-                        <div className="mb-6 overflow-hidden rounded-2xl border border-white/10">
-                          <img src={request.proof_image} className="max-h-64 w-full object-cover" alt="Proof" />
+                        
+                        <div className="space-y-3 mb-6 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">TG Channel:</span>
+                            <a href={app.tg_channel_link} target="_blank" className="text-cyan-400 hover:underline flex items-center gap-1">
+                              Link <ExternalLink className="h-3 w-3" />
+                            </a>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">TG Username:</span>
+                            <span className="text-white font-bold">{app.tg_username}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Vouch Channel:</span>
+                            <a href={app.proof_vouch_channel} target="_blank" className="text-cyan-400 hover:underline flex items-center gap-1">
+                              Link <ExternalLink className="h-3 w-3" />
+                            </a>
+                          </div>
                         </div>
-                      )}
 
-                      <div className="flex gap-4">
-                        <Button 
-                          variant="purple" 
-                          className="flex-1 rounded-xl py-3" 
-                          onClick={() => handleApproveTopUp(request)}
-                          isLoading={processingTopUpId === request.id}
-                          disabled={!!processingTopUpId}
-                        >
-                          <CheckCircle2 className="mr-2 h-4 w-4" />
-                          Approve
-                        </Button>
-                        <Button 
-                          variant="glass" 
-                          className="flex-1 rounded-xl py-3 text-red-400 hover:text-red-300 hover:bg-red-500/20 border-red-500/20" 
-                          onClick={() => handleRejectTopUp(request)}
-                          disabled={!!processingTopUpId}
-                        >
-                          <X className="mr-2 h-4 w-4" />
-                          Reject
-                        </Button>
-                      </div>
-                    </Card>
-                  ))
-                )}
-              </div>
-
-              {/* History */}
-              <div className="mt-16">
-                <h3 className="mb-6 text-xs font-black text-gray-500 uppercase tracking-widest">Recent History</h3>
-                <div className="space-y-3">
-                  {topups.filter(r => r.status !== 'pending').slice(0, 10).map((r) => (
-                    <Card key={r.id} glass className="flex items-center justify-between p-4 border-white/5 hover:bg-white/10 transition-all">
-                      <div className="flex items-center gap-4">
-                        <div className={cn(
-                          "h-3 w-3 rounded-full shadow-lg",
-                          r.status === 'approved' ? "bg-green-500 shadow-green-500/20" : "bg-red-500 shadow-red-500/20"
-                        )} />
-                        <span className="text-sm font-bold text-gray-300">{r.email}</span>
-                      </div>
-                      <div className="flex items-center gap-6">
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
-                          {r.created_at ? format(new Date(r.created_at), 'MMM d') : 'Now'}
-                        </span>
-                        <span className="text-sm font-black text-white">₱{r.amount}</span>
-                        <span className={cn(
-                          "text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-lg border",
-                          r.status === 'approved' ? "text-green-400 bg-green-500/10 border-green-500/20" : "text-red-400 bg-red-500/10 border-red-500/20"
-                        )}>
-                          {r.status}
-                        </span>
-                      </div>
-                    </Card>
-                  ))}
+                        <div className="flex gap-4">
+                          <Button 
+                            variant="purple" 
+                            className="flex-1 rounded-xl py-3 bg-cyan-600 hover:bg-cyan-500" 
+                            onClick={() => handleManageApplication(app.id, 'accepted')}
+                          >
+                            Accept
+                          </Button>
+                          <Button 
+                            variant="glass" 
+                            className="flex-1 rounded-xl py-3 text-red-400 hover:text-red-300 hover:bg-red-500/20 border-red-500/20" 
+                            onClick={() => handleManageApplication(app.id, 'rejected')}
+                          >
+                            Reject
+                          </Button>
+                        </div>
+                      </Card>
+                    ))
+                  )}
                 </div>
-              </div>
+              </section>
+
+              <section>
+                <h2 className="mb-8 text-3xl font-black text-white tracking-tight">Withdrawal Requests</h2>
+                <div className="grid gap-6 sm:grid-cols-2">
+                  {withdrawals.filter(w => w.status === 'pending').length === 0 ? (
+                    <div className="col-span-full py-10 text-center border border-dashed border-white/10 rounded-3xl">
+                      <p className="text-sm font-bold text-gray-500 uppercase tracking-widest">No pending withdrawals.</p>
+                    </div>
+                  ) : (
+                    withdrawals.filter(w => w.status === 'pending').map((w) => (
+                      <Card key={w.id} glass className="p-6 border-white/5">
+                        <div className="mb-6 flex items-start justify-between">
+                          <div>
+                            <p className="font-black text-white tracking-tight">{w.email}</p>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mt-1">
+                              GCash: {w.gcash_number}
+                            </p>
+                          </div>
+                          <span className="text-2xl font-black text-cyan-400">₱{w.amount.toLocaleString()}</span>
+                        </div>
+
+                        <div className="space-y-4 mb-6">
+                          <div>
+                            <label className="mb-2 block text-[10px] font-black text-gray-500 uppercase tracking-widest">Message to Seller:</label>
+                            <Textarea 
+                              placeholder="Optional message..."
+                              value={adminMessage}
+                              onChange={(e) => setNewAdminMessage(e.target.value)}
+                              className="text-xs"
+                            />
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-[10px] font-bold text-gray-300 hover:bg-white/10 transition-all">
+                              <Camera className="h-3 w-3 text-cyan-400" />
+                              Add Image
+                              <input type="file" className="hidden" accept="image/*" onChange={(e) => handleFileChange(e, 'admin')} />
+                            </label>
+                            {adminImage && (
+                              <div className="relative h-8 w-8 overflow-hidden rounded-lg border border-white/20">
+                                <img src={adminImage} className="h-full w-full object-cover" alt="" />
+                                <button onClick={() => setAdminImage(null)} className="absolute -right-1 -top-1 rounded-full bg-red-500 p-0.5 text-white shadow-lg">
+                                  <X className="h-2 w-2" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex gap-4">
+                          <Button 
+                            variant="purple" 
+                            className="flex-1 rounded-xl py-3 bg-cyan-600 hover:bg-cyan-500" 
+                            onClick={() => handleManageWithdrawal(w.id, 'accepted')}
+                            isLoading={isResponding}
+                          >
+                            Accept
+                          </Button>
+                          <Button 
+                            variant="glass" 
+                            className="flex-1 rounded-xl py-3 text-red-400 hover:text-red-300 hover:bg-red-500/20 border-red-500/20" 
+                            onClick={() => handleManageWithdrawal(w.id, 'rejected')}
+                            isLoading={isResponding}
+                          >
+                            Reject
+                          </Button>
+                        </div>
+                      </Card>
+                    ))
+                  )}
+                </div>
+              </section>
             </motion.div>
           )}
 
@@ -2697,6 +3039,143 @@ function App() {
           )}
         </AnimatePresence>
       </main>
+
+      {/* Edit Post Modal */}
+      <Modal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        title="EDIT POST"
+      >
+        {editingPost && (
+          <div className="space-y-6">
+            <div>
+              <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">TITLE:</label>
+              <Input 
+                value={editingPost.title} 
+                onChange={(e) => setEditingPost({ ...editingPost, title: e.target.value })} 
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">PRICE (PHP):</label>
+              <Input 
+                type="number"
+                value={editingPost.price} 
+                onChange={(e) => setEditingPost({ ...editingPost, price: parseFloat(e.target.value) })} 
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">DESCRIPTION:</label>
+              <Textarea 
+                value={editingPost.description} 
+                onChange={(e) => setEditingPost({ ...editingPost, description: e.target.value })} 
+              />
+            </div>
+            <Button 
+              variant="purple" 
+              className="w-full py-4 bg-cyan-600 hover:bg-cyan-500" 
+              onClick={async () => {
+                try {
+                  const { error } = await supabase.from('posts').update({
+                    title: editingPost.title,
+                    price: editingPost.price,
+                    description: editingPost.description
+                  }).eq('id', editingPost.id);
+                  if (error) throw error;
+                  setIsEditModalOpen(false);
+                  showAlert('Success', 'Post updated successfully.');
+                  setPosts(prev => prev.map(p => p.id === editingPost.id ? editingPost : p));
+                } catch (error) {
+                  handleSupabaseError(error, 'update post');
+                }
+              }}
+            >
+              Update Post
+            </Button>
+          </div>
+        )}
+      </Modal>
+
+      {/* Apply Seller Modal */}
+      <Modal
+        isOpen={isApplySellerModalOpen}
+        onClose={() => setIsApplySellerModalOpen(false)}
+        title="BECOME A SELLER"
+      >
+        <div className="space-y-6">
+          <div>
+            <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">TG CHANNEL LINK:</label>
+            <Input 
+              placeholder="https://t.me/yourchannel" 
+              value={tgChannelLink} 
+              onChange={(e) => setTgChannelLink(e.target.value)} 
+            />
+          </div>
+          <div>
+            <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">TG USERNAME:</label>
+            <Input 
+              placeholder="@yourusername" 
+              value={tgUsername} 
+              onChange={(e) => setTgUsername(e.target.value)} 
+            />
+          </div>
+          <div>
+            <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">PROOF & VOUCH CHANNEL:</label>
+            <Input 
+              placeholder="https://t.me/yourvouchchannel" 
+              value={proofVouchChannel} 
+              onChange={(e) => setProofVouchChannel(e.target.value)} 
+            />
+          </div>
+          <Button 
+            variant="purple" 
+            className="w-full py-4 bg-cyan-600 hover:bg-cyan-500" 
+            onClick={handleApplySeller}
+            isLoading={isApplying}
+          >
+            Apply
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Withdraw Modal */}
+      <Modal
+        isOpen={isWithdrawModalOpen}
+        onClose={() => setIsWithdrawModalOpen(false)}
+        title="WITHDRAW MONEY"
+      >
+        <div className="space-y-6">
+          <div className="rounded-xl bg-white/5 p-4 border border-white/10">
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Available Balance</p>
+            <p className="text-2xl font-black text-cyan-400">₱{userBalance.toLocaleString()}</p>
+          </div>
+          <div>
+            <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">AMOUNT (PHP):</label>
+            <Input 
+              type="number"
+              placeholder="Min 100, Max 1000" 
+              value={withdrawAmount} 
+              onChange={(e) => setWithdrawAmount(e.target.value)} 
+            />
+            <p className="mt-1 text-[10px] text-gray-500 italic">Daily Limit: ₱1,000 | Remaining: ₱{1000 - dailyWithdrawAmount}</p>
+          </div>
+          <div>
+            <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">GCASH NUMBER:</label>
+            <Input 
+              placeholder="09XXXXXXXXX" 
+              value={gcashNumber} 
+              onChange={(e) => setGcashNumber(e.target.value)} 
+            />
+          </div>
+          <Button 
+            variant="purple" 
+            className="w-full py-4 bg-cyan-600 hover:bg-cyan-500" 
+            onClick={handleWithdraw}
+            isLoading={isWithdrawing}
+          >
+            Send Request Withdraw
+          </Button>
+        </div>
+      </Modal>
 
       <Modal 
         isOpen={modalConfig.isOpen} 

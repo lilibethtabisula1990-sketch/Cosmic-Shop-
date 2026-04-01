@@ -33,7 +33,10 @@ import {
   Shield,
   Lock,
   EyeOff,
-  Zap
+  Zap,
+  Globe,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { 
   User as SupabaseUser 
@@ -55,6 +58,8 @@ interface Post {
   price: number;
   images: string[];
   files?: string[];
+  stock?: number;
+  likes?: number;
   account_info?: {
     username?: string;
     password?: string;
@@ -100,6 +105,14 @@ interface Message {
   id: string;
   purchase_id: string;
   sender_id: string;
+  content: string;
+  created_at: string;
+}
+
+interface GlobalMessage {
+  id: string;
+  user_id: string;
+  username: string;
   content: string;
   created_at: string;
 }
@@ -308,6 +321,66 @@ export default function AppWrapper() {
   );
 }
 
+const ImageGallery = ({ images }: { images: string[] }) => {
+  const [currentIndex, setCurrentIndex] = useState(0);
+
+  if (!images || images.length === 0) {
+    return (
+      <div className="flex h-full w-full items-center justify-center text-white/10">
+        <ImageIcon className="h-12 w-12" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative h-full w-full group/gallery">
+      <img 
+        src={images[currentIndex]} 
+        className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-110" 
+        alt="" 
+        referrerPolicy="no-referrer"
+      />
+      {images.length > 1 && (
+        <>
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5 z-10">
+            {images.map((_, i) => (
+              <button
+                key={i}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCurrentIndex(i);
+                }}
+                className={cn(
+                  "h-1.5 rounded-full transition-all",
+                  i === currentIndex ? "w-4 bg-purple-500" : "w-1.5 bg-white/30 hover:bg-white/50"
+                )}
+              />
+            ))}
+          </div>
+          <button 
+            onClick={(e) => {
+              e.stopPropagation();
+              setCurrentIndex(prev => (prev === 0 ? images.length - 1 : prev - 1));
+            }}
+            className="absolute left-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white opacity-0 group-hover/gallery:opacity-100 transition-opacity hover:bg-black/70"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <button 
+            onClick={(e) => {
+              e.stopPropagation();
+              setCurrentIndex(prev => (prev === images.length - 1 ? 0 : prev + 1));
+            }}
+            className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white opacity-0 group-hover/gallery:opacity-100 transition-opacity hover:bg-black/70"
+          >
+            <ArrowLeft className="h-4 w-4 rotate-180" />
+          </button>
+        </>
+      )}
+    </div>
+  );
+};
+
 function App() {
   const [user, setUser] = useState<SupabaseUser | null>(null);
   const [userBalance, setUserBalance] = useState<number>(0);
@@ -368,16 +441,18 @@ function App() {
   const showConfirm = (title: string, message: string, onConfirm: () => void) => {
     setModalConfig({ isOpen: true, title, message, onConfirm, type: 'confirm' });
   };
-  const [activeTab, setActiveTab] = useState<'shop' | 'feedback' | 'admin' | 'whitelist' | 'topup' | 'requests' | 'chat' | 'orders' | 'inbox'>('shop');
+  const [activeTab, setActiveTab] = useState<'shop' | 'feedback' | 'admin' | 'whitelist' | 'topup' | 'requests' | 'chat' | 'orders' | 'inbox' | 'global_chat'>('shop');
   const [posts, setPosts] = useState<Post[]>([]);
   const [feedbacks, setFeedbacks] = useState<Feedback[]>([]);
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [topups, setTopups] = useState<TopUpRequest[]>([]);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [globalMessages, setGlobalMessages] = useState<GlobalMessage[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activePurchase, setActivePurchase] = useState<Purchase | null>(null);
   const [newMessage, setNewMessage] = useState('');
+  const [newGlobalMessage, setNewGlobalMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [isMarkingAsRead, setIsMarkingAsRead] = useState(false);
   const [securityCooldown, setSecurityCooldown] = useState<number>(0);
@@ -436,6 +511,7 @@ function App() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('0');
+  const [stock, setStock] = useState('999');
   const [images, setImages] = useState<string[]>([]);
   const [files, setFiles] = useState<string[]>([]);
   const [username, setUsername] = useState('');
@@ -456,18 +532,32 @@ function App() {
     // Log detailed error for developers, but obfuscate for users (Layer 7)
     console.error(`[Security Log] Error during ${operation}:`, error);
     
-    if (error.message?.includes('Could not find the table') || error.code === 'PGRST116') {
-      showAlert('System Maintenance', 'Our systems are currently being updated. Please try again in a few minutes.');
-    } else if (error.code === '42501') {
-      showAlert('Access Denied', 'You do not have permission to perform this action. This event has been logged.');
+    const message = error.message || '';
+    const code = error.code || '';
+
+    if (message.includes('Could not find the table') || code === 'PGRST116' || code === '42P01') {
+      showAlert('System Maintenance', `The database table for "${operation}" is missing. Please ensure your Supabase database is properly set up.`);
+    } else if ((message.includes('column') && message.includes('does not exist')) || code === '42703' || code === 'PGRST204') {
+      showAlert('Database Update Required', `A required column for "${operation}" is missing (e.g., likes, stock, files). Please run the SQL fix in your Supabase dashboard.`);
+    } else if (code === '42501') {
+      showAlert('Access Denied', 'You do not have permission to perform this action. Check your Supabase RLS policies.');
+    } else if (message.includes('JWT') || message.includes('Invalid API key') || code === 'PGRST301' || code === '401') {
+      showAlert('Authentication Error', 'There is a problem with the database authentication. Please check your Supabase API keys in the Secrets panel.');
+    } else if (message.includes('fetch') || message.includes('NetworkError') || message.includes('Failed to fetch') || code === 'TypeError') {
+      showAlert('Connection Error', 'Could not connect to the database. Please check your internet connection and the Supabase URL.');
     } else {
-      showAlert('Request Failed', 'Your request could not be processed at this time. Please try again later.');
+      const codeSuffix = code ? ` (Code: ${code})` : '';
+      showAlert('Request Failed', `Your request could not be processed at this time. Please try again later.${codeSuffix}`);
     }
-    // We still throw to stop execution, but the UI is sanitized
-    throw new Error('Operation failed');
   };
 
   useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      showAlert('Configuration Missing', 'Supabase URL and Anon Key are missing. Please configure them in the AI Studio Secrets panel to enable database features.');
+      return;
+    }
+
     const timeout = setTimeout(() => {
       setLoading(false);
     }, 5000);
@@ -591,6 +681,13 @@ function App() {
         .select('*');
       if (sellersError) handleSupabaseError(sellersError, 'list sellers');
       else setSellers(sellersData || []);
+
+      const { data: globalMsgsData } = await supabase
+        .from('global_messages')
+        .select('*')
+        .order('created_at', { ascending: true })
+        .limit(50);
+      if (globalMsgsData) setGlobalMessages(globalMsgsData);
     };
 
     fetchPublicData();
@@ -608,10 +705,15 @@ function App() {
       supabase.from('sellers').select('*').then(({ data }) => setSellers(data || []));
     }).subscribe();
 
+    const globalChatChannel = supabase.channel(`public-global-chat-${Math.random().toString(36).substring(7)}`).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'global_messages' }, (payload) => {
+      setGlobalMessages(prev => [...prev, payload.new].slice(-50));
+    }).subscribe();
+
     return () => {
       supabase.removeChannel(postsChannel);
       supabase.removeChannel(feedbacksChannel);
       supabase.removeChannel(sellersChannel);
+      supabase.removeChannel(globalChatChannel);
     };
   }, []);
 
@@ -862,7 +964,15 @@ function App() {
   };
 
   const handlePost = async () => {
-    if (!user || (!isSuperAdmin && !isSeller)) return;
+    console.log('handlePost called', { user: user?.email, isSuperAdmin, isSeller });
+    if (!user) {
+      handleLogin();
+      return;
+    }
+    if (!isSuperAdmin && !isSeller) {
+      showAlert('Unauthorized', 'Only admins and whitelisted sellers can create posts.');
+      return;
+    }
     if (!checkSecurity()) return; // Layer 1 & 4 check
 
     // Layer 2: Strict Character Limits & Sanitization
@@ -893,6 +1003,8 @@ function App() {
         title: cleanTitle,
         description: cleanDesc,
         price: Math.min(parseFloat(price) || 0, 1000000), // Layer 6: Price cap
+        stock: parseInt(stock) || 0,
+        likes: 0,
         images,
         author_id: user.id,
         created_at: new Date().toISOString(),
@@ -915,6 +1027,7 @@ function App() {
       setTitle('');
       setDescription('');
       setPrice('0');
+      setStock('999');
       setImages([]);
       setFiles([]);
       setUsername('');
@@ -938,6 +1051,22 @@ function App() {
         handleSupabaseError(error, 'delete post');
       }
     });
+  };
+
+  const handleLikePost = async (post: Post) => {
+    if (!user) {
+      handleLogin();
+      return;
+    }
+    try {
+      const { error } = await supabase
+        .from('posts')
+        .update({ likes: (post.likes || 0) + 1 })
+        .eq('id', post.id);
+      if (error) throw error;
+    } catch (error) {
+      handleSupabaseError(error, 'like post');
+    }
   };
 
   const handleWhitelist = async () => {
@@ -1100,6 +1229,7 @@ function App() {
   };
 
   const handleBuy = async (post: Post) => {
+    console.log('handleBuy called', { post: post.title, user: user?.email, userBalance });
     if (!user) {
       handleLogin();
       return;
@@ -1112,9 +1242,23 @@ function App() {
       return;
     }
 
+    if (post.stock != null && post.stock <= 0) {
+      showAlert('Out of Stock', 'This item is currently out of stock.');
+      return;
+    }
+
     showConfirm('Confirm Purchase', `Are you sure you want to buy "${post.title}" for ₱${post.price.toLocaleString()}?`, async () => {
       try {
         setCooldown(5); // Cooldown during process
+        
+        // Check stock again before purchase
+        const { data: latestPost, error: stockCheckError } = await supabase.from('posts').select('stock').eq('id', post.id).single();
+        if (stockCheckError) throw stockCheckError;
+        if (latestPost.stock != null && latestPost.stock <= 0) {
+          showAlert('Out of Stock', 'This item just went out of stock.');
+          return;
+        }
+
         // Update user balance (Note: In production, use RPC for atomic decrement)
         const { error: userError } = await supabase
           .from('users')
@@ -1122,6 +1266,11 @@ function App() {
           .eq('id', user.id);
         
         if (userError) throw userError;
+
+        // Decrease stock
+        if (post.stock != null) {
+          await supabase.from('posts').update({ stock: latestPost.stock - 1 }).eq('id', post.id);
+        }
         
         // Create purchase record
         const { data: purchaseData, error: purchaseError } = await supabase.from('purchases').insert({
@@ -1211,6 +1360,41 @@ function App() {
     }
   };
 
+  const handleSendGlobalMessage = async () => {
+    if (!user || !newGlobalMessage.trim()) return;
+    if (!checkSecurity()) return;
+
+    const messageData = {
+      user_id: user.id,
+      username: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
+      content: newGlobalMessage.trim().substring(0, 500),
+      created_at: new Date().toISOString(),
+    };
+
+    try {
+      const { error } = await supabase.from('global_messages').insert(messageData);
+      if (error) throw error;
+      setNewGlobalMessage('');
+      setCooldown(3); // 3s cooldown for global chat
+    } catch (error) {
+      handleSupabaseError(error, 'send global message');
+    }
+  };
+
+  const handleClearGlobalChat = async () => {
+    if (!isSuperAdmin) return;
+    showConfirm('Clear Global Chat', 'Are you sure you want to clear all messages in the global chat?', async () => {
+      try {
+        const { error } = await supabase.from('global_messages').delete().neq('id', '0');
+        if (error) throw error;
+        setGlobalMessages([]);
+        showAlert('Success', 'Global chat cleared.');
+      } catch (error) {
+        handleSupabaseError(error, 'clear global chat');
+      }
+    });
+  };
+
   const handleMarkAsRead = async (id: string) => {
     try {
       const { error } = await supabase.from('notifications').update({ is_read: true }).eq('id', id);
@@ -1231,6 +1415,7 @@ function App() {
 
   const sidebarNavItems = [
     { icon: ShoppingBag, label: 'Shop', tab: 'shop' },
+    { icon: Globe, label: 'Global Chat', tab: 'global_chat' },
     { icon: Package, label: 'My Orders', tab: 'orders' },
     { icon: Bell, label: 'Inbox', tab: 'inbox' },
     { icon: MessageSquare, label: 'Proofs', tab: 'feedback' },
@@ -1417,6 +1602,16 @@ function App() {
               Shop
             </button>
             <button
+              onClick={() => setActiveTab('global_chat')}
+              className={cn(
+                'flex items-center gap-2 whitespace-nowrap rounded-xl px-6 py-2.5 text-sm font-black transition-all uppercase tracking-widest',
+                activeTab === 'global_chat' ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-white/5'
+              )}
+            >
+              <Globe className="h-4 w-4" />
+              Global Chat
+            </button>
+            <button
               onClick={() => setActiveTab('feedback')}
               className={cn(
                 'flex items-center gap-2 whitespace-nowrap rounded-xl px-6 py-2.5 text-sm font-black transition-all uppercase tracking-widest',
@@ -1522,6 +1717,94 @@ function App() {
 
         {/* Content Area */}
         <AnimatePresence mode="wait">
+          {activeTab === 'global_chat' && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="max-w-4xl mx-auto space-y-6"
+            >
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h2 className="text-4xl font-black tracking-tighter text-white uppercase italic">
+                    GLOBAL <span className="text-purple-500">CHAT</span>
+                  </h2>
+                  <p className="text-gray-400 font-medium tracking-widest uppercase text-xs mt-1">Connect with the community</p>
+                </div>
+                {isSuperAdmin && (
+                  <Button 
+                    variant="glass" 
+                    size="sm" 
+                    onClick={handleClearGlobalChat}
+                    className="rounded-xl text-red-400 hover:text-red-300 hover:bg-red-500/20 border-red-500/20"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Clear Chat
+                  </Button>
+                )}
+              </div>
+
+              <div className="bg-[#0d0d1f] border border-white/5 rounded-3xl overflow-hidden flex flex-col h-[600px] shadow-2xl">
+                <div className="flex-1 overflow-y-auto p-6 space-y-4 scrollbar-hide">
+                  {globalMessages.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4">
+                      <Globe className="h-12 w-12 opacity-20" />
+                      <p className="font-black uppercase tracking-widest text-sm">No messages yet. Start the conversation!</p>
+                    </div>
+                  ) : (
+                    globalMessages.map((msg, idx) => (
+                      <motion.div
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        key={msg.id || idx}
+                        className={cn(
+                          "flex flex-col max-w-[80%]",
+                          msg.user_id === user?.id ? "ml-auto items-end" : "items-start"
+                        )}
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[10px] font-black uppercase tracking-tighter text-purple-400">
+                            {msg.username}
+                          </span>
+                          <span className="text-[8px] text-gray-500 font-medium uppercase tracking-widest">
+                            {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div className={cn(
+                          "px-4 py-3 rounded-2xl text-sm font-medium shadow-lg",
+                          msg.user_id === user?.id 
+                            ? "bg-gradient-to-br from-purple-600 to-indigo-600 text-white rounded-tr-none" 
+                            : "bg-white/5 text-gray-200 border border-white/5 rounded-tl-none"
+                        )}>
+                          {msg.content}
+                        </div>
+                      </motion.div>
+                    ))
+                  )}
+                </div>
+
+                <div className="p-4 bg-black/20 border-t border-white/5">
+                  <div className="flex gap-3">
+                    <input
+                      type="text"
+                      value={newGlobalMessage}
+                      onChange={(e) => setNewGlobalMessage(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && handleSendGlobalMessage()}
+                      placeholder="Type your message..."
+                      className="flex-1 bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all placeholder:text-gray-600 font-medium"
+                    />
+                    <Button 
+                      onClick={handleSendGlobalMessage}
+                      disabled={!newGlobalMessage.trim()}
+                      className="rounded-2xl px-8 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 shadow-lg shadow-purple-500/20"
+                    >
+                      <Send className="h-5 w-5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
           {activeTab === 'shop' && (
             <motion.div
               key="shop"
@@ -1541,18 +1824,7 @@ function App() {
                   return (
                     <Card key={post.id} glass className="group relative flex flex-col border-white/5 hover:border-purple-500/50 hover:shadow-purple-500/10">
                       <div className="aspect-video w-full overflow-hidden bg-white/5">
-                        {post.images && post.images.length > 0 ? (
-                          <img 
-                            src={post.images[0]} 
-                            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-110" 
-                            alt="" 
-                            referrerPolicy="no-referrer"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-white/10">
-                            <ImageIcon className="h-12 w-12" />
-                          </div>
-                        )}
+                        <ImageGallery images={post.images} />
                         <div className="absolute top-3 left-3 flex gap-2">
                           <span className={cn(
                             "inline-flex items-center rounded-lg px-2.5 py-1 text-[10px] font-black uppercase tracking-widest backdrop-blur-md border",
@@ -1560,6 +1832,14 @@ function App() {
                           )}>
                             {post.type}
                           </span>
+                          {post.stock != null && (
+                            <span className={cn(
+                              "inline-flex items-center rounded-lg px-2.5 py-1 text-[10px] font-black uppercase tracking-widest backdrop-blur-md border",
+                              post.stock > 0 ? "bg-green-500/20 text-green-400 border-green-500/30" : "bg-red-500/20 text-red-400 border-red-500/30"
+                            )}>
+                              {post.stock > 0 ? `Stock: ${post.stock}` : 'Out of Stock'}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="flex flex-1 flex-col p-6">
@@ -1588,11 +1868,25 @@ function App() {
                               {post.type === 'file' ? 'Download' : 'View Info'}
                             </Button>
                           ) : (
-                            <Button variant="purple" className="flex-1 rounded-xl py-3" onClick={() => handleBuy(post)}>
-                              Buy Now
+                            <Button 
+                              variant="purple" 
+                              className="flex-1 rounded-xl py-3" 
+                              onClick={() => handleBuy(post)}
+                              disabled={post.stock != null && post.stock <= 0}
+                            >
+                              {post.stock != null && post.stock <= 0 ? 'Out of Stock' : 'Buy Now'}
                             </Button>
                           )}
                           <div className="flex items-center gap-3">
+                            <Button 
+                              variant="glass"
+                              size="icon"
+                              onClick={() => handleLikePost(post)}
+                              className="rounded-xl text-pink-400 hover:text-pink-300 hover:bg-pink-500/20 border-pink-500/20"
+                            >
+                              <Zap className={cn("h-4 w-4", (post.likes || 0) > 0 && "fill-pink-400")} />
+                              {(post.likes || 0) > 0 && <span className="ml-1 text-[10px] font-black">{post.likes}</span>}
+                            </Button>
                             {(isSuperAdmin || isSeller) && (
                               <Button 
                                 variant="glass"
@@ -1753,9 +2047,15 @@ function App() {
                       <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">Description</label>
                       <Textarea placeholder="Describe the item..." value={description} onChange={(e) => setDescription(e.target.value)} />
                     </div>
-                    <div>
-                      <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">Price (₱)</label>
-                      <Input type="number" value={price} onChange={(e) => setPrice(e.target.value)} />
+                    <div className="grid gap-6 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">Price (₱)</label>
+                        <Input type="number" value={price} onChange={(e) => setPrice(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="mb-2 block text-xs font-black text-gray-500 uppercase tracking-widest">Stock</label>
+                        <Input type="number" value={stock} onChange={(e) => setStock(e.target.value)} />
+                      </div>
                     </div>
                   </div>
 
